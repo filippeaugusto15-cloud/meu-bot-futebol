@@ -1,4 +1,5 @@
 import asyncio
+import os
 import requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -44,9 +45,11 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# --- ROTA PRINCIPAL CORRIGIDA PARA NUVEM ---
 @app.get("/")
 async def get():
-    with open("templates/index.html", "r", encoding="utf-8") as f:
+    caminho_template = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+    with open(caminho_template, "r", encoding="utf-8") as f:
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
@@ -63,13 +66,11 @@ async def websocket_endpoint(websocket: WebSocket):
 # --- REQUISIÇÕES DA API-FOOTBALL ---
 
 def obter_jogos_ao_vivo():
-    # Retorna todos os jogos em andamento no mundo com estatísticas no mesmo payload
     url = f"{BASE_URL}/fixtures?live=all"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         dados = res.json()
         
-        # Monitora limite de requisições da cota gratuita
         requests_left = res.headers.get("x-ratelimit-requests-remaining", "N/A")
         print(f"[API-FOOTBALL] Requisições restantes hoje: {requests_left}")
         
@@ -79,7 +80,6 @@ def obter_jogos_ao_vivo():
         return []
 
 def obter_proximos_jogos():
-    # Busca os próximos 10 jogos agendados
     url = f"{BASE_URL}/fixtures?next=10"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -115,14 +115,12 @@ async def motor_de_analise():
             gols_fora = goals.get("away") or 0
             total_gols = gols_casa + gols_fora
 
-            # Extração detalhada de estatísticas da API-Football
             cantos = 0
             chutes_gol = 0
             chutes_fora = 0
             cartoes_amarelos = 0
             cartoes_vermelhos = 0
 
-            # Cartões rápidos
             events = jogo.get("events", [])
             for ev in events:
                 if ev.get("type") == "Card":
@@ -131,7 +129,6 @@ async def motor_de_analise():
                     elif ev.get("detail") == "Red Card":
                         cartoes_vermelhos += 1
 
-            # Estatísticas de chutes e escanteios
             statistics = jogo.get("statistics", [])
             for team_stats in statistics:
                 for stat in team_stats.get("statistics", []):
@@ -148,7 +145,7 @@ async def motor_de_analise():
             finalizacoes = chutes_gol + chutes_fora
             total_cartoes = cartoes_amarelos + cartoes_vermelhos
 
-            # --- GATILHO 1: PRESSÃO DE GOLS (Mínimo 0.15 chutes/min) ---
+            # --- GATILHO 1: PRESSÃO DE GOLS ---
             ritmo_chutes = finalizacoes / minuto
             chave_gol = f"gol_{fixture_id}"
 
@@ -160,7 +157,7 @@ async def motor_de_analise():
                     "texto": f"Entrada mais de {linha_sugerida} gols live {time_casa} x {time_fora} ({finalizacoes} finalizações em {minuto}')"
                 })
 
-            # --- GATILHO 2: PROJEÇÃO LINEAR DE ESCANTEIOS ---
+            # --- GATILHO 2: PROJEÇÃO DE ESCANTEIOS ---
             taxa_cantos_min = cantos / minuto
             projecao_cantos = cantos + (taxa_cantos_min * (90 - minuto))
             chave_canto = f"canto_{fixture_id}"
@@ -173,7 +170,7 @@ async def motor_de_analise():
                     "texto": f"Entrada mais de {linha_canto} escanteios live {time_casa} x {time_fora} (Projeção: {projecao_cantos:.1f} cantos)"
                 })
 
-            # --- GATILHO 3: JOGO QUENTE DE CARTÕES ---
+            # --- GATILHO 3: CARTÕES ---
             chave_cartao = f"cartao_{fixture_id}"
             if 30 <= minuto <= 75 and total_cartoes >= 3 and chave_cartao not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_cartao)
@@ -208,8 +205,8 @@ async def motor_de_analise():
                     ]
                 })
 
-        # Intervalo de 180 segundos para economizar a cota gratuita
-        await asyncio.sleep(180)
+        # Intervalo de 900 segundos (15 minutos) para cobrir 24 horas no plano Free
+        await asyncio.sleep(900)
 
 @app.on_event("startup")
 async def startup_event():
