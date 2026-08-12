@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner API-Football | Alertas de Apostas</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 25px;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        h1 {
+            color: #38bdf8;
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+        }
+
+        .status-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: #94a3b8;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #ef4444; /* Vermelho por padrão */
+        }
+
+        .status-dot.online {
+            background-color: #22c55e; /* Verde quando conectado */
+            box-shadow: 0 0 10px #22c55e;
+        }
+
+        main {
+            width: 100%;
+            max-width: 800px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .section-title {
+            font-size: 1.1rem;
+            color: #cbd5e1;
+            border-bottom: 2px solid #334155;
+            padding-bottom: 6px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .feed-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .card {
+            background-color: #1e293b;
+            border-radius: 8px;
+            padding: 16px;
+            border-left: 4px solid #38bdf8;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            animation: fadeIn 0.4s ease-in-out;
+        }
+
+        .card.pre-live {
+            border-left-color: #f59e0b;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            color: #94a3b8;
+            margin-bottom: 8px;
+        }
+
+        .card-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 6px;
+        }
+
+        .card-content {
+            font-size: 0.95rem;
+            color: #cbd5e1;
+            line-height: 1.4;
+        }
+
+        .entradas-list {
+            margin-top: 8px;
+            padding-left: 18px;
+            color: #94a3b8;
+            font-size: 0.88rem;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #64748b;
+            padding: 30px;
+            font-style: italic;
+            background-color: #1e293b40;
+            border-radius: 8px;
+            border: 1px dashed #334155;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>⚽ Scanner API-Football</h1>
+        <div class="status-container">
+            <div id="statusDot" class="status-dot"></div>
+            <span id="statusText">Conectando ao servidor...</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- SEÇÃO DE JOGOS AO VIVO (IN-PLAY) -->
+        <section>
+            <div class="section-title">
+                🚨 Oportunidades Ao Vivo (In-Play)
+            </div>
+            <div id="liveFeed" class="feed-container">
+                <div class="empty-state">Aguardando gatilhos e entradas de partidas ao vivo...</div>
+            </div>
+        </section>
+
+        <!-- SEÇÃO DE PRÓXIMOS JOGOS (PRÉ-JOGO) -->
+        <section>
+            <div class="section-title">
+                📅 Radar de Próximos Jogos
+            </div>
+            <div id="preFeed" class="feed-container">
+                <div class="empty-state">Buscando agenda de próximos jogos sob radar...</div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // Identifica o protocolo do WebSocket automaticamente (ws ou wss)
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+        const statusDot = document.getElementById("statusDot");
+        const statusText = document.getElementById("statusText");
+        const liveFeed = document.getElementById("liveFeed");
+        const preFeed = document.getElementById("preFeed");
+
+        let liveFirstMessage = true;
+        let preFirstMessage = true;
+
+        const socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+            statusDot.classList.add("online");
+            statusText.innerText = "Conectado e monitorando em tempo real";
+        };
+
+        socket.onclose = () => {
+            statusDot.classList.remove("online");
+            statusText.innerText = "Desconectado. Tentando reconectar...";
+            setTimeout(() => {
+                window.location.reload();
+            }, 5000);
+        };
+
+        socket.onerror = (err) => {
+            console.error("Erro no WebSocket:", err);
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const horaAtual = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+            if (data.tipo === "LIVE") {
+                if (liveFirstMessage) {
+                    liveFeed.innerHTML = "";
+                    liveFirstMessage = false;
+                }
+
+                const card = document.createElement("div");
+                card.className = "card";
+                card.innerHTML = `
+                    <div class="card-header">
+                        <span>🔥 ALERTA IN-PLAY</span>
+                        <span>${horaAtual}</span>
+                    </div>
+                    <div class="card-content">
+                        ${data.texto}
+                    </div>
+                `;
+                liveFeed.prepend(card);
+            } 
+            else if (data.tipo === "PRE_LIVE") {
+                if (preFirstMessage) {
+                    preFeed.innerHTML = "";
+                    preFirstMessage = false;
+                }
+
+                const card = document.createElement("div");
+                card.className = "card pre-live";
+                
+                let listaEntradas = "";
+                if (data.entradas && Array.isArray(data.entradas)) {
+                    listaEntradas = `<ul class="entradas-list">` + 
+                        data.entradas.map(item => `<li>${item}</li>`).join("") + 
+                    `</ul>`;
+                }
+
+                card.innerHTML = `
+                    <div class="card-header">
+                        <span>📌 PRÉ-JOGO</span>
+                        <span>${horaAtual}</span>
+                    </div>
+                    <div class="card-title">${data.jogo}</div>
+                    ${listaEntradas}
+                `;
+                preFeed.prepend(card);
+            }
+        };
+    </script>
+</body>
+</html>
