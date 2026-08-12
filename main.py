@@ -8,10 +8,14 @@ import uvicorn
 app = FastAPI()
 
 # -----------------------------------------------------------------------------
-# SUA CHAVE CONFIGURADA DA API-FOOTBALL
+# CONFIGURAÇÕES DE APIS E NOTIFICAÇÕES
 # -----------------------------------------------------------------------------
 API_KEY = "87218213ea542ba95badcd5fe3d057c0"
 BASE_URL = "https://v3.football.api-sports.io"
+
+# TELEGRAM CONFIGURADO
+TELEGRAM_BOT_TOKEN = "8833467196:AAGy5UY-wGyvF6hJEAXYUW-hSD3mskpWb7I"
+TELEGRAM_CHAT_ID = "5384859613"
 
 HEADERS = {
     'x-apisports-key': API_KEY
@@ -19,6 +23,21 @@ HEADERS = {
 
 alertas_enviados_live = set()
 alertas_enviados_pre = set()
+
+def enviar_notificacao_telegram(mensagem: str):
+    """Envia mensagem no seu celular via Telegram"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": mensagem,
+        "parse_mode": "HTML"
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Erro ao enviar notificação no Telegram: {e}")
 
 class ConnectionManager:
     def __init__(self):
@@ -45,7 +64,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- ROTA PRINCIPAL CORRIGIDA PARA NUVEM ---
 @app.get("/")
 async def get():
     caminho_template = os.path.join(os.path.dirname(__file__), "templates", "index.html")
@@ -61,9 +79,6 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-
-
-# --- REQUISIÇÕES DA API-FOOTBALL ---
 
 def obter_jogos_ao_vivo():
     url = f"{BASE_URL}/fixtures?live=all"
@@ -88,16 +103,10 @@ def obter_proximos_jogos():
         print(f"Erro ao buscar próximos jogos: {e}")
         return []
 
-
-# --- MOTOR DE ANÁLISE ESTATÍSTICA ---
-
 async def motor_de_analise():
     while True:
         print("\n[SCANNER API-FOOTBALL] Analisando métricas de partidas no mundo...")
 
-        # =========================================================================
-        # 1. ANÁLISE AO VIVO (IN-PLAY)
-        # =========================================================================
         jogos_live = obter_jogos_ao_vivo()
         print(f"[LIVE] Partidas em andamento localizadas: {len(jogos_live)}")
 
@@ -152,10 +161,10 @@ async def motor_de_analise():
             if 15 <= minuto <= 75 and ritmo_chutes >= 0.15 and chave_gol not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_gol)
                 linha_sugerida = total_gols + 0.5
-                await manager.broadcast({
-                    "tipo": "LIVE",
-                    "texto": f"Entrada mais de {linha_sugerida} gols live {time_casa} x {time_fora} ({finalizacoes} finalizações em {minuto}')"
-                })
+                texto = f"⚽ <b>ALERTA DE GOLS IN-PLAY</b>\n\n<b>{time_casa} x {time_fora}</b>\nEntrada: Mais de {linha_sugerida} Gols\nMinuto: {minuto}'\nFinalizações: {finalizacoes}"
+                
+                await manager.broadcast({"tipo": "LIVE", "texto": texto})
+                enviar_notificacao_telegram(texto)
 
             # --- GATILHO 2: PROJEÇÃO DE ESCANTEIOS ---
             taxa_cantos_min = cantos / minuto
@@ -165,51 +174,26 @@ async def motor_de_analise():
             if 20 <= minuto <= 80 and projecao_cantos >= 8.5 and cantos >= 3 and chave_canto not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_canto)
                 linha_canto = cantos + 2
-                await manager.broadcast({
-                    "tipo": "LIVE",
-                    "texto": f"Entrada mais de {linha_canto} escanteios live {time_casa} x {time_fora} (Projeção: {projecao_cantos:.1f} cantos)"
-                })
+                texto = f"🚩 <b>ALERTA DE ESCANTEIOS</b>\n\n<b>{time_casa} x {time_fora}</b>\nEntrada: Mais de {linha_canto} Escanteios\nMinuto: {minuto}'\nCantos Atuais: {cantos} (Projeção: {projecao_cantos:.1f})"
+                
+                await manager.broadcast({"tipo": "LIVE", "texto": texto})
+                enviar_notificacao_telegram(texto)
 
             # --- GATILHO 3: CARTÕES ---
             chave_cartao = f"cartao_{fixture_id}"
             if 30 <= minuto <= 75 and total_cartoes >= 3 and chave_cartao not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_cartao)
-                await manager.broadcast({
-                    "tipo": "LIVE",
-                    "texto": f"Entrada mais de {total_cartoes + 1.5} cartões live {time_casa} x {time_fora} ({total_cartoes} cartões acumulados)"
-                })
+                texto = f"🟨 <b>ALERTA DE CARTÕES</b>\n\n<b>{time_casa} x {time_fora}</b>\nEntrada: Mais de {total_cartoes + 1.5} Cartões\nMinuto: {minuto}'\nTotal de Cartões: {total_cartoes}"
+                
+                await manager.broadcast({"tipo": "LIVE", "texto": texto})
+                enviar_notificacao_telegram(texto)
 
-        # =========================================================================
-        # 2. AGENDA DE PRÓXIMOS JOGOS (PRÉ-JOGO)
-        # =========================================================================
-        jogos_pre = obter_proximos_jogos()
-
-        for jogo in jogos_pre[:5]:
-            fixture = jogo.get("fixture", {})
-            fixture_id = fixture.get("id")
-
-            if fixture_id not in alertas_enviados_pre:
-                teams = jogo.get("teams", {})
-                time_casa = teams.get("home", {}).get("name", "Casa")
-                time_fora = teams.get("away", {}).get("name", "Fora")
-                liga = jogo.get("league", {}).get("name", "Liga")
-
-                alertas_enviados_pre.add(fixture_id)
-
-                await manager.broadcast({
-                    "tipo": "PRE_LIVE",
-                    "jogo": f"{time_casa} x {time_fora} ({liga})",
-                    "entradas": [
-                        "Jogo sob radar de pressão In-Play",
-                        "Mercados monitorados: Gols, Escanteios e Cartões"
-                    ]
-                })
-
-        # Intervalo de 900 segundos (15 minutos) para cobrir 24 horas no plano Free
         await asyncio.sleep(900)
 
 @app.on_event("startup")
 async def startup_event():
+    # Envia notificação no Telegram avisando que o bot ligou
+    enviar_notificacao_telegram("🚀 <b>Scanner de Futebol Conectado!</b>\n\nNotificações via Telegram ativas e monitorando partidas.")
     asyncio.create_task(motor_de_analise())
 
 if __name__ == "__main__":
