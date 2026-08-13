@@ -8,12 +8,11 @@ import uvicorn
 app = FastAPI()
 
 # -----------------------------------------------------------------------------
-# CONFIGURAÇÕES DE APIS E NOTIFICAÇÕES
+# CONFIGURAÇÕES DE APIS E NOTIFICAÇÕES (PLANO PRO)
 # -----------------------------------------------------------------------------
 API_KEY = "87218213ea542ba95badcd5fe3d057c0"
 BASE_URL = "https://v3.football.api-sports.io"
 
-# TELEGRAM CONFIGURADO
 TELEGRAM_BOT_TOKEN = "8833467196:AAGy5UY-wGyvF6hJEAXYUW-hSD3mskpWb7I"
 TELEGRAM_CHAT_ID = "5384859613"
 
@@ -48,7 +47,7 @@ class ConnectionManager:
         self.active_connections.append(websocket)
         await websocket.send_json({
             "tipo": "LIVE",
-            "texto": "Scanner API-Football Ativo! Monitorando ligas globais..."
+            "texto": "Scanner API-Football (PRO) Ativo! Monitorando em tempo real..."
         })
 
     def disconnect(self, websocket: WebSocket):
@@ -87,7 +86,7 @@ def obter_jogos_ao_vivo():
         dados = res.json()
         
         requests_left = res.headers.get("x-ratelimit-requests-remaining", "N/A")
-        print(f"[API-FOOTBALL] Requisições restantes hoje: {requests_left}")
+        print(f"[API-FOOTBALL PRO] Requisições restantes hoje: {requests_left}")
         
         return dados.get("response", [])
     except Exception as e:
@@ -95,7 +94,7 @@ def obter_jogos_ao_vivo():
         return []
 
 def obter_proximos_jogos():
-    url = f"{BASE_URL}/fixtures?next=10"
+    url = f"{BASE_URL}/fixtures?next=15"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         return res.json().get("response", [])
@@ -103,12 +102,99 @@ def obter_proximos_jogos():
         print(f"Erro ao buscar próximos jogos: {e}")
         return []
 
+def obter_historico_time(team_id):
+    """Busca histórico dos últimos 5 jogos de uma equipe para extrair gols e escanteios."""
+    url = f"{BASE_URL}/fixtures?team={team_id}&last=5"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        jogos = res.json().get("response", [])
+        
+        total_gols = 0
+        total_jogos = len(jogos)
+        
+        for j in jogos:
+            g_casa = j.get("goals", {}).get("home") or 0
+            g_fora = j.get("goals", {}).get("away") or 0
+            total_gols += (g_casa + g_fora)
+            
+        media_gols = (total_gols / total_jogos) if total_jogos > 0 else 0
+        return {"media_gols": media_gols, "qtd_jogos": total_jogos}
+    except Exception as e:
+        print(f"Erro ao buscar histórico do time {team_id}: {e}")
+        return {"media_gols": 0, "qtd_jogos": 0}
+
+# -----------------------------------------------------------------------------
+# ANÁLISE PRÉ-JOGO
+# -----------------------------------------------------------------------------
+async def analisar_pre_jogo():
+    print("\n[PRÉ-JOGO PRO] Analisando próximos jogos...")
+    proximos = obter_proximos_jogos()
+
+    for jogo in proximos:
+        fixture = jogo.get("fixture", {})
+        fixture_id = fixture.get("id")
+
+        if fixture_id in alertas_enviados_pre:
+            continue
+
+        teams = jogo.get("teams", {})
+        id_casa = teams.get("home", {}).get("id")
+        nome_casa = teams.get("home", {}).get("name", "Casa")
+
+        id_fora = teams.get("away", {}).get("id")
+        nome_fora = teams.get("away", {}).get("name", "Fora")
+
+        data_hora = fixture.get("date", "")[11:16] # HH:MM
+
+        stats_casa = obter_historico_time(id_casa)
+        stats_fora = obter_historico_time(id_fora)
+
+        if stats_casa["qtd_jogos"] == 0 or stats_fora["qtd_jogos"] == 0:
+            continue
+
+        media_geral_gols = (stats_casa["media_gols"] + stats_fora["media_gols"]) / 2
+
+        # Filtro de valor para envio
+        if media_geral_gols >= 2.0:
+            alertas_enviados_pre.add(fixture_id)
+
+            sugestoes = []
+            sugestoes.append("• Mais de 1.5 Gols na partida")
+
+            if media_geral_gols >= 2.8:
+                sugestoes.append("• Mais de 0.5 Gols no 1º Tempo")
+                sugestoes.append("• Mais de 2.5 Escanteios no 1º Tempo")
+            else:
+                sugestoes.append("• Mais de 2.5 Cartões na partida")
+
+            lista_sugestoes = "\n".join(sugestoes)
+
+            texto = (
+                f"📅 <b>ALERTA PRÉ-JOGO PRO</b>\n\n"
+                f"⚽ <b>{nome_casa} x {nome_fora}</b>\n"
+                f"⏰ Horário: {data_hora}\n"
+                f"📊 Média Recente de Gols: <b>{media_geral_gols:.1f}</b>/jogo\n\n"
+                f"💡 <b>Sugestão de Criar Aposta (Betano):</b>\n{lista_sugestoes}"
+            )
+
+            await manager.broadcast({"tipo": "PRE", "texto": texto})
+            enviar_notificacao_telegram(texto)
+
+# -----------------------------------------------------------------------------
+# MOTOR PRINCIPAL (AO VIVO VELOZ)
+# -----------------------------------------------------------------------------
 async def motor_de_analise():
+    contador_pre = 0
     while True:
-        print("\n[SCANNER API-FOOTBALL] Analisando métricas de partidas no mundo...")
+        print("\n[SCANNER PRO] Varrendo partidas ao vivo...")
+
+        # Roda pré-jogo a cada 30 ciclos (30 * 30s = 15 minutos)
+        if contador_pre % 30 == 0:
+            await analisar_pre_jogo()
+        contador_pre += 1
 
         jogos_live = obter_jogos_ao_vivo()
-        print(f"[LIVE] Partidas em andamento localizadas: {len(jogos_live)}")
+        print(f"[LIVE] Partidas ativas no momento: {len(jogos_live)}")
 
         for jogo in jogos_live:
             fixture = jogo.get("fixture", {})
@@ -158,10 +244,16 @@ async def motor_de_analise():
             ritmo_chutes = finalizacoes / minuto
             chave_gol = f"gol_{fixture_id}"
 
-            if 15 <= minuto <= 75 and ritmo_chutes >= 0.15 and chave_gol not in alertas_enviados_live:
+            if 15 <= minuto <= 75 and ritmo_chutes >= 0.14 and chave_gol not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_gol)
                 linha_sugerida = total_gols + 0.5
-                texto = f"⚽ <b>ALERTA DE GOLS IN-PLAY</b>\n\n<b>{time_casa} x {time_fora}</b>\nEntrada: Mais de {linha_sugerida} Gols\nMinuto: {minuto}'\nFinalizações: {finalizacoes}"
+                texto = (
+                    f"⚽ <b>ALERTA DE GOLS IN-PLAY (PRO)</b>\n\n"
+                    f"<b>{time_casa} x {time_fora}</b>\n"
+                    f"🎯 Entrada: <b>Mais de {linha_sugerida} Gols</b>\n"
+                    f"⏱ Minuto: {minuto}'\n"
+                    f"📊 Finalizações: {finalizacoes} (Ritmo: {ritmo_chutes:.2f}/min)"
+                )
                 
                 await manager.broadcast({"tipo": "LIVE", "texto": texto})
                 enviar_notificacao_telegram(texto)
@@ -174,7 +266,13 @@ async def motor_de_analise():
             if 20 <= minuto <= 80 and projecao_cantos >= 8.5 and cantos >= 3 and chave_canto not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_canto)
                 linha_canto = cantos + 2
-                texto = f"🚩 <b>ALERTA DE ESCANTEIOS</b>\n\n<b>{time_casa} x {time_fora}</b>\nEntrada: Mais de {linha_canto} Escanteios\nMinuto: {minuto}'\nCantos Atuais: {cantos} (Projeção: {projecao_cantos:.1f})"
+                texto = (
+                    f"🚩 <b>ALERTA DE ESCANTEIOS (PRO)</b>\n\n"
+                    f"<b>{time_casa} x {time_fora}</b>\n"
+                    f"🎯 Entrada: <b>Mais de {linha_canto} Escanteios</b>\n"
+                    f"⏱ Minuto: {minuto}'\n"
+                    f"📊 Cantos Atuais: {cantos} (Projeção: {projecao_cantos:.1f})"
+                )
                 
                 await manager.broadcast({"tipo": "LIVE", "texto": texto})
                 enviar_notificacao_telegram(texto)
@@ -183,28 +281,34 @@ async def motor_de_analise():
             chave_cartao = f"cartao_{fixture_id}"
             if 30 <= minuto <= 75 and total_cartoes >= 3 and chave_cartao not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_cartao)
-                texto = f"🟨 <b>ALERTA DE CARTÕES</b>\n\n<b>{time_casa} x {time_fora}</b>\nEntrada: Mais de {total_cartoes + 1.5} Cartões\nMinuto: {minuto}'\nTotal de Cartões: {total_cartoes}"
+                texto = (
+                    f"🟨 <b>ALERTA DE CARTÕES (PRO)</b>\n\n"
+                    f"<b>{time_casa} x {time_fora}</b>\n"
+                    f"🎯 Entrada: <b>Mais de {total_cartoes + 1.5} Cartões</b>\n"
+                    f"⏱ Minuto: {minuto}'\n"
+                    f"📊 Total de Cartões: {total_cartoes}"
+                )
                 
                 await manager.broadcast({"tipo": "LIVE", "texto": texto})
                 enviar_notificacao_telegram(texto)
 
-        await asyncio.sleep(900)
+        # Checa jogos ao vivo a cada 30 segundos
+        await asyncio.sleep(30)
 
 async def manter_vivo():
-    """Faz requisições para a própria URL a cada 10 minutos para evitar que o Render adormeça."""
     await asyncio.sleep(10)
     url_propria = "https://meu-bot-futebol-636r.onrender.com/"
     while True:
         try:
             requests.get(url_propria, timeout=5)
-            print("[KEEP-ALIVE] Ping enviado para manter o servidor ativo.")
+            print("[KEEP-ALIVE] Ping enviado.")
         except Exception as e:
-            print(f"[KEEP-ALIVE] Erro ao enviar ping: {e}")
-        await asyncio.sleep(600)  # Executa a cada 10 minutos (600 segundos)
+            print(f"[KEEP-ALIVE] Erro: {e}")
+        await asyncio.sleep(600)
 
 @app.on_event("startup")
 async def startup_event():
-    enviar_notificacao_telegram("🚀 <b>Scanner de Futebol Conectado!</b>\n\nNotificações via Telegram ativas e monitorando partidas.")
+    enviar_notificacao_telegram("🚀 <b>Scanner de Futebol PRO Conectado!</b>\n\nVarredura ultrarrápida (30s) e alertas pré-jogo ativos!")
     asyncio.create_task(motor_de_analise())
     asyncio.create_task(manter_vivo())
 
