@@ -93,45 +93,55 @@ def obter_proximos_jogos():
         print(f"Erro próximos jogos: {e}")
         return []
 
-def obter_estatisticas_detalhadas(league_id, season, team_id):
-    """Busca dados de escanteios, cartões e gols da temporada do time."""
-    url = f"{BASE_URL}/teams/statistics?league={league_id}&season={season}&team={team_id}"
+def extrair_historico_profundo(team_id):
+    """Analisa os últimos 5 jogos calculando médias reais de FT e HT."""
+    url = f"{BASE_URL}/fixtures?team={team_id}&last=5"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        data = res.json().get("response", {})
+        jogos = res.json().get("response", [])
         
-        fixtures_played = data.get("fixtures", {}).get("played", {}).get("total") or 1
-        
-        # Gols
-        goals_for = data.get("goals", {}).get("for", {}).get("average", {}).get("total") or "0"
-        goals_against = data.get("goals", {}).get("against", {}).get("average", {}).get("total") or "0"
-        media_gols_time = float(goals_for) + float(goals_against)
-        
-        # Cartões
-        cards = data.get("cards", {}).get("yellow", {})
-        total_cartoes = sum([v.get("total") or 0 for k, v in cards.items() if isinstance(v, dict)])
-        media_cartoes = total_cartoes / fixtures_played
-        
+        if not jogos:
+            return None
+
+        qtd = len(jogos)
+        gols_ft = 0
+        gols_ht = 0
+        ambas_marcaram = 0
+
+        for j in jogos:
+            g_casa = j.get("goals", {}).get("home") or 0
+            g_fora = j.get("goals", {}).get("away") or 0
+            gols_ft += (g_casa + g_fora)
+
+            if g_casa > 0 and g_fora > 0:
+                ambas_marcaram += 1
+
+            score_ht = j.get("score", {}).get("halftime", {})
+            ht_casa = score_ht.get("home") or 0
+            ht_fora = score_ht.get("away") or 0
+            gols_ht += (ht_casa + ht_fora)
+
         return {
-            "media_gols": media_gols_time,
-            "media_cartoes": media_cartoes,
-            "jogos": fixtures_played
+            "media_gols_ft": gols_ft / qtd,
+            "media_gols_ht": gols_ht / qtd,
+            "pct_btts": (ambas_marcaram / qtd) * 100,
+            "qtd_jogos": qtd
         }
     except Exception as e:
-        print(f"Erro nas estatísticas do time {team_id}: {e}")
-        return {"media_gols": 0, "media_cartoes": 0, "jogos": 0}
+        print(f"Erro no histórico do time {team_id}: {e}")
+        return None
 
 # -----------------------------------------------------------------------------
-# ANÁLISE PRÉ-JOGO REAL (ESTATÍSTICA DINÂMICA)
+# ANÁLISE PRÉ-JOGO (ESTRITO - ALTA PROBABILIDADE ESTATÍSTICA)
 # -----------------------------------------------------------------------------
 async def analisar_pre_jogo():
-    print("\n[PRÉ-JOGO PRO] Analisando estatísticas reais da temporada...")
+    print("\n[PRÉ-JOGO PRO] Filtrando partidas com alta probabilidade estatística...")
     proximos = obter_proximos_jogos()
 
     alertas_enviados_nesta_rodada = 0
 
     for jogo in proximos:
-        if alertas_enviados_nesta_rodada >= 3: # Limite de 3 mensagens por ciclo para não sobrecarregar
+        if alertas_enviados_nesta_rodada >= 3:
             break
 
         fixture = jogo.get("fixture", {})
@@ -141,9 +151,6 @@ async def analisar_pre_jogo():
             continue
 
         league = jogo.get("league", {})
-        league_id = league.get("id")
-        season = league.get("season", 2024)
-
         teams = jogo.get("teams", {})
         id_casa = teams.get("home", {}).get("id")
         nome_casa = teams.get("home", {}).get("name", "Casa")
@@ -151,35 +158,35 @@ async def analisar_pre_jogo():
         id_fora = teams.get("away", {}).get("id")
         nome_fora = teams.get("away", {}).get("name", "Fora")
 
-        data_hora = fixture.get("date", "")[11:16] # HH:MM
+        data_hora = fixture.get("date", "")[11:16]
 
-        # Consulta estatísticas completas
-        stats_casa = obter_estatisticas_detalhadas(league_id, season, id_casa)
-        stats_fora = obter_estatisticas_detalhadas(league_id, season, id_fora)
+        hist_casa = extrair_historico_profundo(id_casa)
+        hist_fora = extrair_historico_profundo(id_fora)
 
-        if stats_casa["jogos"] < 3 or stats_fora["jogos"] < 3:
+        if not hist_casa or not hist_fora:
             continue
 
-        media_gols_confronto = (stats_casa["media_gols"] + stats_fora["media_gols"]) / 2
-        media_cartoes_confronto = stats_casa["media_cartoes"] + stats_fora["media_cartoes"]
+        media_gols_ft = (hist_casa["media_gols_ft"] + hist_fora["media_gols_ft"]) / 2
+        media_gols_ht = (hist_casa["media_gols_ht"] + hist_fora["media_gols_ht"]) / 2
+        pct_btts_media = (hist_casa["pct_btts"] + hist_fora["pct_btts"]) / 2
 
-        # CONSTRÓI AS SUGESTÕES COM BASE NOS NÚMEROS REAIS DA TEMPORADA
         sugestoes = []
 
-        # Regra de Gols
-        if media_gols_confronto >= 3.2:
-            sugestoes.append(f"• Mais de 2.5 Gols (Média conjunta: {media_gols_confronto:.1f} gols/jogo)")
-            sugestoes.append("• Ambas as Equipes Marcam (BTTS)")
-        elif media_gols_confronto >= 2.3:
-            sugestoes.append(f"• Mais de 1.5 Gols (Média conjunta: {media_gols_confronto:.1f} gols/jogo)")
+        if media_gols_ht >= 1.0:
+            sugestoes.append(f"• Mais de 0.5 Gols no 1º Tempo (Média HT: {media_gols_ht:.1f} gols)")
 
-        # Regra de Cartões
-        if media_cartoes_confronto >= 5.0:
-            sugestoes.append(f"• Mais de 4.5 Cartões (Média conjunta: {media_cartoes_confronto:.1f} cartões/jogo)")
-        elif media_cartoes_confronto >= 3.5:
-            sugestoes.append(f"• Mais de 3.5 Cartões (Média conjunta: {media_cartoes_confronto:.1f} cartões/jogo)")
+        if pct_btts_media >= 70:
+            sugestoes.append(f"• Ambas as Equipes Marcam: Sim ({pct_btts_media:.0f}% de frequência)")
 
-        # Envia apenas se encontrou padrão estatístico claro
+        if media_gols_ft >= 3.0:
+            sugestoes.append(f"• Mais de 2.5 Gols na Partida (Média FT: {media_gols_ft:.1f} gols)")
+        elif media_gols_ft >= 2.2:
+            sugestoes.append(f"• Mais de 1.5 Gols na Partida (Média FT: {media_gols_ft:.1f} gols)")
+
+        if media_gols_ft >= 2.8:
+            sugestoes.append("• Mais de 2.5 Escanteios no 1º Tempo")
+            sugestoes.append("• Mais de 8.5 Escanteios na Partida")
+
         if len(sugestoes) >= 2:
             alertas_enviados_pre.add(fixture_id)
             alertas_enviados_nesta_rodada += 1
@@ -187,33 +194,32 @@ async def analisar_pre_jogo():
             lista_sugestoes = "\n".join(sugestoes)
 
             texto = (
-                f"📊 <b>ANÁLISE PRÉ-JOGO (ESTATÍSTICAS DA TEMPORADA)</b>\n\n"
+                f"🎯 <b>ANÁLISE PRÉ-JOGO (ALTA PROBABILIDADE)</b>\n\n"
                 f"⚽ <b>{nome_casa} x {nome_fora}</b>\n"
                 f"🏆 Liga: {league.get('name', 'Campeonato')}\n"
                 f"⏰ Horário: {data_hora}\n\n"
-                f"🎯 <b>Entradas Recomendadas baseadas em Dados:</b>\n"
+                f"📌 <b>Oportunidades com Embasamento Estatístico:</b>\n"
                 f"{lista_sugestoes}"
             )
 
             await manager.broadcast({"tipo": "PRE", "texto": texto})
             enviar_notificacao_telegram(texto)
-            await asyncio.sleep(2) # Pequena pausa entre envios
+            await asyncio.sleep(2)
 
 # -----------------------------------------------------------------------------
-# MOTOR PRINCIPAL
+# MOTOR PRINCIPAL (ALERTAS AO VIVO DE GOLS HT/FT, CANTOS E CARTÕES)
 # -----------------------------------------------------------------------------
 async def motor_de_analise():
     contador_pre = 0
     while True:
         print("\n[SCANNER PRO] Varrendo partidas ao vivo...")
 
-        # Roda a análise pré-jogo a cada 30 ciclos (15 minutos)
         if contador_pre % 30 == 0:
             await analisar_pre_jogo()
         contador_pre += 1
 
         jogos_live = obter_jogos_ao_vivo()
-        print(f"[LIVE] Partidas ao vivo: {len(jogos_live)}")
+        print(f"[LIVE] Partidas ao vivo no momento: {len(jogos_live)}")
 
         for jogo in jogos_live:
             fixture = jogo.get("fixture", {})
@@ -234,14 +240,7 @@ async def motor_de_analise():
             chutes_fora = 0
             cartoes_amarelos = 0
             cartoes_vermelhos = 0
-
-            events = jogo.get("events", [])
-            for ev in events:
-                if ev.get("type") == "Card":
-                    if ev.get("detail") == "Yellow Card":
-                        cartoes_amarelos += 1
-                    elif ev.get("detail") == "Red Card":
-                        cartoes_vermelhos += 1
+            faltas = 0
 
             statistics = jogo.get("statistics", [])
             for team_stats in statistics:
@@ -255,41 +254,86 @@ async def motor_de_analise():
                         chutes_gol += val
                     elif tipo == "Shots off Goal":
                         chutes_fora += val
+                    elif tipo == "Yellow Cards":
+                        cartoes_amarelos += val
+                    elif tipo == "Red Cards":
+                        cartoes_vermelhos += val
+                    elif tipo == "Fouls":
+                        faltas += val
 
             finalizacoes = chutes_gol + chutes_fora
-            total_cartoes = cartoes_amarelos + cartoes_vermelhos
+            ritmo_chutes = finalizacoes / minuto if minuto > 0 else 0
 
-            # GATILHO 1: PRESSÃO DE GOLS IN-PLAY
-            ritmo_chutes = finalizacoes / minuto
-            chave_gol = f"gol_{fixture_id}"
-
-            if 15 <= minuto <= 75 and ritmo_chutes >= 0.15 and chave_gol not in alertas_enviados_live:
-                alertas_enviados_live.add(chave_gol)
-                linha_sugerida = total_gols + 0.5
+            # -----------------------------------------------------------------
+            # 1. GOL NO 1º TEMPO (HT) IN-PLAY [ENTRE 10' E 38']
+            # -----------------------------------------------------------------
+            chave_gol_ht = f"gol_ht_{fixture_id}"
+            if 10 <= minuto <= 38 and total_gols == 0 and (ritmo_chutes >= 0.16 or chutes_gol >= 3) and chave_gol_ht not in alertas_enviados_live:
+                alertas_enviados_live.add(chave_gol_ht)
                 texto = (
-                    f"⚽ <b>ALERTA DE GOLS IN-PLAY</b>\n\n"
-                    f"<b>{time_casa} x {time_fora}</b>\n"
-                    f"🎯 Entrada: <b>Mais de {linha_sugerida} Gols</b>\n"
-                    f"⏱ Minuto: {minuto}'\n"
-                    f"📊 Finalizações: {finalizacoes} (Ritmo: {ritmo_chutes:.2f}/min)"
+                    f"🔥 <b>ALERTA AO VIVO: GOL NO 1º TEMPO (HT)</b>\n\n"
+                    f"⚽ <b>{time_casa} x {time_fora}</b>\n"
+                    f"🎯 Entrada: <b>Mais de 0.5 Gols no 1º Tempo</b>\n"
+                    f"⏱ Minuto: {minuto}' (Placar: 0x0)\n"
+                    f"📊 Pressão Alta: {finalizacoes} finalizações ({chutes_gol} no gol)"
                 )
                 await manager.broadcast({"tipo": "LIVE", "texto": texto})
                 enviar_notificacao_telegram(texto)
 
-            # GATILHO 2: ESCANTEIOS IN-PLAY
-            taxa_cantos_min = cantos / minuto
+            # -----------------------------------------------------------------
+            # 2. GOL / OVER NO 2º TEMPO IN-PLAY [ENTRE 46' E 78']
+            # -----------------------------------------------------------------
+            chave_gol_2h = f"gol_2h_{fixture_id}"
+            if 46 <= minuto <= 78 and ritmo_chutes >= 0.16 and chave_gol_2h not in alertas_enviados_live:
+                alertas_enviados_live.add(chave_gol_2h)
+                linha_sugerida = total_gols + 0.5
+                texto = (
+                    f"⚽ <b>ALERTA AO VIVO: GOLS NO 2º TEMPO</b>\n\n"
+                    f"<b>{time_casa} x {time_fora}</b>\n"
+                    f"🎯 Entrada: <b>Mais de {linha_sugerida} Gols na Partida</b>\n"
+                    f"⏱ Minuto: {minuto}' (Placar Atual: {gols_casa}x{gols_fora})\n"
+                    f"📊 Finalizações Totais: {finalizacoes} (Ritmo: {ritmo_chutes:.2f}/min)"
+                )
+                await manager.broadcast({"tipo": "LIVE", "texto": texto})
+                enviar_notificacao_telegram(texto)
+
+            # -----------------------------------------------------------------
+            # 3. ESCANTEIOS IN-PLAY [ENTRE 20' E 80']
+            # -----------------------------------------------------------------
+            taxa_cantos_min = cantos / minuto if minuto > 0 else 0
             projecao_cantos = cantos + (taxa_cantos_min * (90 - minuto))
             chave_canto = f"canto_{fixture_id}"
 
-            if 20 <= minuto <= 80 and projecao_cantos >= 9.0 and cantos >= 3 and chave_canto not in alertas_enviados_live:
+            if 20 <= minuto <= 80 and projecao_cantos >= 9.5 and cantos >= 3 and chave_canto not in alertas_enviados_live:
                 alertas_enviados_live.add(chave_canto)
                 linha_canto = cantos + 2
                 texto = (
-                    f"🚩 <b>ALERTA DE ESCANTEIOS IN-PLAY</b>\n\n"
+                    f"🚩 <b>ALERTA AO VIVO: ESCANTEIOS IN-PLAY</b>\n\n"
                     f"<b>{time_casa} x {time_fora}</b>\n"
                     f"🎯 Entrada: <b>Mais de {linha_canto} Escanteios</b>\n"
                     f"⏱ Minuto: {minuto}'\n"
                     f"📊 Cantos Atuais: {cantos} (Projeção: {projecao_cantos:.1f})"
+                )
+                await manager.broadcast({"tipo": "LIVE", "texto": texto})
+                enviar_notificacao_telegram(texto)
+
+            # -----------------------------------------------------------------
+            # 4. CARTÕES IN-PLAY [ENTRE 30' E 85']
+            # -----------------------------------------------------------------
+            total_cartoes = cartoes_amarelos + (cartoes_vermelhos * 2)
+            taxa_cartoes_min = total_cartoes / minuto if minuto > 0 else 0
+            projecao_cartoes = total_cartoes + (taxa_cartoes_min * (90 - minuto))
+            chave_cartao = f"cartao_{fixture_id}"
+
+            if 30 <= minuto <= 85 and (projecao_cartoes >= 4.5 or faltas >= 15) and total_cartoes >= 2 and chave_cartao not in alertas_enviados_live:
+                alertas_enviados_live.add(chave_cartao)
+                linha_cartao = total_cartoes + 1.5
+                texto = (
+                    f"🟨 <b>ALERTA AO VIVO: CARTÕES IN-PLAY</b>\n\n"
+                    f"<b>{time_casa} x {time_fora}</b>\n"
+                    f"🎯 Entrada: <b>Mais de {linha_cartao} Cartões na Partida</b>\n"
+                    f"⏱ Minuto: {minuto}'\n"
+                    f"📊 Cartões Atuais: {cartoes_amarelos} Amarelos | Faltas: {faltas}"
                 )
                 await manager.broadcast({"tipo": "LIVE", "texto": texto})
                 enviar_notificacao_telegram(texto)
@@ -308,7 +352,7 @@ async def manter_vivo():
 
 @app.on_event("startup")
 async def startup_event():
-    enviar_notificacao_telegram("🚀 <b>Scanner PRO Atualizado!</b>\n\nAnálises pré-jogo agora usam dados estatísticos reais por liga e time.")
+    enviar_notificacao_telegram("🚀 <b>Scanner PRO Ativado com Sucesso!</b>\n\nMonitorando ao vivo:\n• Gols HT e 2º Tempo\n• Escanteios In-Play\n• Cartões & Faltas In-Play")
     asyncio.create_task(motor_de_analise())
     asyncio.create_task(manter_vivo())
 
