@@ -190,11 +190,23 @@ async def motor_de_analise():
 
         await asyncio.sleep(900)
 
+async def manter_vivo():
+    """Faz requisições para a própria URL a cada 10 minutos para evitar que o Render adormeça."""
+    await asyncio.sleep(10)
+    url_propria = "https://meu-bot-futebol-636r.onrender.com/"
+    while True:
+        try:
+            requests.get(url_propria, timeout=5)
+            print("[KEEP-ALIVE] Ping enviado para manter o servidor ativo.")
+        except Exception as e:
+            print(f"[KEEP-ALIVE] Erro ao enviar ping: {e}")
+        await asyncio.sleep(600)  # Executa a cada 10 minutos (600 segundos)
+
 @app.on_event("startup")
 async def startup_event():
-    # Envia notificação no Telegram avisando que o bot ligou
     enviar_notificacao_telegram("🚀 <b>Scanner de Futebol Conectado!</b>\n\nNotificações via Telegram ativas e monitorando partidas.")
     asyncio.create_task(motor_de_analise())
+    asyncio.create_task(manter_vivo())
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
